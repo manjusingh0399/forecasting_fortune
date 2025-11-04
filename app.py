@@ -1,30 +1,33 @@
 # ==========================================================
-# Forecasting Fortune — Razorpay-style Streamlit Web App
+# Forecasting Fortune — Razorpay-Themed Streamlit Dashboard
 # FY25–26 (April 2025 – March 2026)
 # ==========================================================
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.figure_factory as ff
 from datetime import datetime
-from io import BytesIO
 
 # ----------------------------------------------------------
 # Page setup
 # ----------------------------------------------------------
 st.set_page_config(page_title="Forecasting Fortune 💳", page_icon="💫", layout="wide")
 
-st.title("💫 Forecasting Fortune — Data but Make It Fashion")
-st.caption("A Razorpay-inspired analytics dashboard for FY 2025–26 📊")
+st.markdown("""
+<h1 style="text-align:center; color:#0B69FF;">💫 Forecasting Fortune: Razorpay Revenue Analytics</h1>
+<p style="text-align:center; font-size:18px;">Where Financial Forecasting Meets Fashion & FinTech</p>
+""", unsafe_allow_html=True)
 
 st.markdown("""
-This fun financial-forecast app re-imagines analytics through the Razorpay lens.  
-You can **analyze weekly revenue, profit, transactions & active merchants** between  
-**April 2025 → March 2026** — and even simulate next-week predictions ✨  
+This interactive dashboard reimagines **Razorpay’s FY25–26 performance** through
+data visualization, forecasting, and storytelling.  
+Explore trends, relationships, and growth insights for:
+**Revenue, Profit, Transactions, and Active Merchants.**
 """)
 
 # ----------------------------------------------------------
-# Helper: synthetic dataset generator
+# Generate or upload data
 # ----------------------------------------------------------
 def generate_synthetic_data():
     dates = pd.date_range("2025-04-01", "2026-03-31", freq="W")
@@ -45,101 +48,130 @@ def generate_synthetic_data():
     })
     return df
 
-# ----------------------------------------------------------
-# Load or create data
-# ----------------------------------------------------------
 uploaded = st.sidebar.file_uploader("📂 Upload your CSV (optional)", type=["csv"])
 if uploaded:
     try:
         df = pd.read_csv(uploaded)
         st.sidebar.success("✅ File uploaded successfully!")
     except Exception:
-        st.sidebar.error("⚠️ Could not read CSV. Using sample data instead.")
+        st.sidebar.error("⚠️ Could not read CSV. Using synthetic data instead.")
         df = generate_synthetic_data()
 else:
     df = generate_synthetic_data()
 
-# ----------------------------------------------------------
-# Data cleaning & filtering
-# ----------------------------------------------------------
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-df = df.dropna(subset=["Date"])
 df = df[(df["Date"] >= "2025-04-01") & (df["Date"] <= "2026-03-31")]
 
 # ----------------------------------------------------------
 # KPIs
 # ----------------------------------------------------------
-st.subheader("✨ Quick Financial Snapshot")
+st.markdown("### 💼 Key Performance Indicators (FY25–26)")
 latest = df.iloc[-1]
 prev = df.iloc[-2]
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Revenue", f"₹{latest['Revenue']:,.0f}", f"₹{latest['Revenue']-prev['Revenue']:,.0f}")
-c2.metric("Profit", f"₹{latest['Profit']:,.0f}")
+c1.metric("Revenue", f"₹{latest['Revenue']:,.0f}", f"{(latest['Revenue']-prev['Revenue']):,.0f}")
+c2.metric("Profit", f"₹{latest['Profit']:,.0f}", f"{(latest['Profit']-prev['Profit']):,.0f}")
 c3.metric("Transactions", f"{latest['Transactions']:,.0f}")
 c4.metric("Active Merchants", f"{latest['Active Merchants']:,.0f}")
 
 # ----------------------------------------------------------
-# Visualizations
+# Tabs for visualization
 # ----------------------------------------------------------
-st.markdown("### 📈 Weekly Trends")
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📈 Trends & Growth", 
+    "📊 Correlations & Efficiency", 
+    "💰 Profitability & Margins", 
+    "🧠 Insights & Story"
+])
 
-tab1, tab2, tab3 = st.tabs(["Revenue & Profit", "Transactions", "Active Merchants"])
-
+# ----------------------------------------------------------
+# 1️⃣ Trends
+# ----------------------------------------------------------
 with tab1:
-    fig1 = px.line(df, x="Date", y=["Revenue", "Profit"], title="Revenue vs Profit (FY25–26)")
-    st.plotly_chart(fig1, use_container_width=True)
+    st.subheader("Revenue, Profit & Volume Trends")
 
-with tab2:
-    fig2 = px.area(df, x="Date", y="Transactions", title="Weekly Transactions Volume", color_discrete_sequence=["#636EFA"])
+    fig = px.line(df, x="Date", y=["Revenue", "Profit"], title="Revenue & Profit Over Time", 
+                  color_discrete_sequence=["#0B69FF", "#9B51E0"])
+    st.plotly_chart(fig, use_container_width=True)
+
+    df["Revenue Growth %"] = df["Revenue"].pct_change() * 100
+    fig2 = px.line(df, x="Date", y="Revenue Growth %", title="Weekly Revenue Growth (%)",
+                   color_discrete_sequence=["#F39C12"])
     st.plotly_chart(fig2, use_container_width=True)
 
-with tab3:
-    fig3 = px.bar(df, x="Date", y="Active Merchants", title="Active Merchants Trend", color="Active Merchants")
+    df["Quarter"] = df["Date"].dt.to_period("Q").astype(str)
+    qrev = df.groupby("Quarter")["Revenue"].sum().reset_index()
+    fig3 = px.bar(qrev, x="Quarter", y="Revenue", title="Quarterly Revenue Breakdown", color="Revenue",
+                  color_continuous_scale="Blues")
     st.plotly_chart(fig3, use_container_width=True)
 
 # ----------------------------------------------------------
-# Forecast Simulation (simple linear trend)
+# 2️⃣ Correlation & Efficiency
 # ----------------------------------------------------------
-st.markdown("### 🔮 Forecast Simulation (Next 12 Weeks)")
+with tab2:
+    st.subheader("📊 Relationship Between Metrics")
 
-# Simple trend projection
-trend_weeks = 12
-x = np.arange(len(df))
-future_x = np.arange(len(df), len(df) + trend_weeks)
-future_dates = pd.date_range(df["Date"].iloc[-1] + pd.Timedelta(weeks=1), periods=trend_weeks, freq="W")
+    corr = df[["Revenue", "Profit", "Transactions", "Active Merchants"]].corr()
+    fig_corr = ff.create_annotated_heatmap(
+        z=corr.values, x=list(corr.columns), y=list(corr.columns),
+        colorscale="blues", showscale=True)
+    fig_corr.update_layout(title="Correlation Heatmap", height=500)
+    st.plotly_chart(fig_corr, use_container_width=True)
 
-def forecast_series(series):
-    coef = np.polyfit(x, series, 1)
-    return np.polyval(coef, future_x)
-
-future_df = pd.DataFrame({
-    "Date": future_dates,
-    "Revenue": forecast_series(df["Revenue"]),
-    "Profit": forecast_series(df["Profit"]),
-    "Transactions": forecast_series(df["Transactions"]),
-    "Active Merchants": forecast_series(df["Active Merchants"])
-})
-
-figf = px.line(future_df, x="Date", y="Revenue", title="Projected Revenue (Next 12 Weeks)", color_discrete_sequence=["#FF6692"])
-st.plotly_chart(figf, use_container_width=True)
+    fig4 = px.scatter(df, x="Transactions", y="Revenue", 
+                      title="Revenue vs Transactions Efficiency",
+                      color="Profit", size="Active Merchants",
+                      color_continuous_scale="Viridis")
+    st.plotly_chart(fig4, use_container_width=True)
 
 # ----------------------------------------------------------
-# Download section
+# 3️⃣ Profitability & Margins
 # ----------------------------------------------------------
-st.markdown("### 📥 Download Data")
-buffer = BytesIO()
-df.to_csv(buffer, index=False)
-st.download_button("Download FY25–26 Data (CSV)", data=buffer.getvalue(),
-                   file_name="razorpay_forecasting_fortune_FY25_26.csv",
-                   mime="text/csv")
+with tab3:
+    st.subheader("💰 Profit Margin & Merchant Impact")
+
+    df["Profit Margin %"] = (df["Profit"] / df["Revenue"]) * 100
+    fig5 = px.area(df, x="Date", y="Profit Margin %", title="Profit Margin Trend (%)", color_discrete_sequence=["#4B7BE5"])
+    st.plotly_chart(fig5, use_container_width=True)
+
+    # Simulate merchant contribution
+    tiers = ["Small", "Medium", "Enterprise"]
+    contrib = [0.25, 0.45, 0.30]
+    mdata = pd.DataFrame({"Merchant Tier": tiers, "Revenue Share": contrib})
+    fig6 = px.pie(mdata, names="Merchant Tier", values="Revenue Share", title="Revenue Contribution by Merchant Tier",
+                  color_discrete_sequence=["#0B69FF", "#5C33F6", "#A8BFFF"])
+    st.plotly_chart(fig6, use_container_width=True)
+
+# ----------------------------------------------------------
+# 4️⃣ Insights
+# ----------------------------------------------------------
+with tab4:
+    st.subheader("🧠 Strategic Insights Summary")
+    avg_growth = df["Revenue Growth %"].mean()
+    avg_margin = df["Profit Margin %"].mean()
+    strongest_corr = corr["Revenue"].drop("Revenue").idxmax()
+
+    st.markdown(f"""
+    - 📈 Average weekly revenue growth: **{avg_growth:.2f}%**
+    - 💰 Average profit margin: **{avg_margin:.2f}%**
+    - 🔗 Strongest correlation: **Revenue ↔ {strongest_corr}**
+    - 🧾 Suggestion: Focus on increasing {strongest_corr.lower()} to enhance revenue momentum.
+    - ⚙️ Seasonal trend: Q3 (Oct–Dec) shows peak growth — plan promotions accordingly.
+    """)
+
+    st.markdown("""
+    <div style="background-color:#EAF2FF;padding:15px;border-radius:10px;margin-top:10px;">
+    <b>Strategic Takeaway:</b>  
+    Razorpay’s FY25–26 data shows strong growth potential led by transaction expansion.  
+    Prioritizing merchant engagement and optimizing transaction volume could further improve
+    revenue scalability and profit margins.
+    </div>
+    """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------
 # Footer
 # ----------------------------------------------------------
 st.markdown("---")
 st.markdown("""
-💡 **About this app:**  
-“Forecasting Fortune” re-imagines analytics in Razorpay style — playful, modern, and data-driven.  
-It demonstrates **how forecasting, visualization, and financial storytelling** can come together  
-to make business analytics engaging, insightful, and fashionably fun 💅  
-""")
+<center>💡 Developed for <b>Razorpay x Grant Thornton</b> | A fun MBA-fintech analytics experiment ✨</center>
+""", unsafe_allow_html=True)
