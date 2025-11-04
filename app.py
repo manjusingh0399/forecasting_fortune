@@ -1,156 +1,176 @@
-# forecasting_fortune_streamlit.py
-# Fun, Razorpay-themed Streamlit webapp for "Forecasting Fortune"
-# Features:
-# - Upload or load default dataset (/mnt/data/razorpay_fy26_weekly_financial_data.csv)
-# - Interactive EDA (KPIs, timeseries, distribution)
-# - Prophet forecasting (choose metric & horizon)
-# - Download forecast, view components, and playful UI
+# app.py — Forecasting Fortune 💳
+# Razorpay-themed revenue forecasting & analytics webapp
+# Safe, self-contained, Streamlit Cloud ready
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from prophet import Prophet
 from prophet.plot import plot_plotly
 from io import BytesIO
+import base64
 
-# ------------------ SETUP ------------------
-st.set_page_config(page_title="Forecasting Fortune", layout="wide", page_icon="💳")
+# --------------------------- PAGE CONFIG ---------------------------
+st.set_page_config(
+    page_title="Forecasting Fortune 💳",
+    layout="wide",
+    page_icon="💫",
+    initial_sidebar_state="expanded"
+)
 
-# ------------------ LOAD DATA ------------------
+# --------------------------- THEME ---------------------------
+st.markdown("""
+    <style>
+    body { background-color: #f8faff; }
+    .main {
+        background: linear-gradient(180deg, rgba(240,245,255,1) 0%, rgba(255,255,255,1) 100%);
+        border-radius: 20px;
+        padding: 20px;
+    }
+    .stApp header { display: none; }
+    .block-container { padding-top: 1rem; }
+    h1, h2, h3, h4 { color: #0052cc; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --------------------------- HELPERS ---------------------------
 @st.cache_data
-def load_default_data(path="/mnt/data/razorpay_fy26_weekly_financial_data.csv"):
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return None
-
-@st.cache_data
-def generate_synthetic(n=1000, start="2023-01-01"):
+def generate_data(n=1000, start="2023-01-01"):
     dates = pd.date_range(start=start, periods=n, freq="D")
-    revenue = 200000 + np.linspace(0, 50000, n) + 20000*np.sin(np.arange(n)/30) + np.random.normal(0,8000,n)
-    transactions = 5000 + np.linspace(0,1500,n) + 500*np.sin(np.arange(n)/14) + np.random.normal(0,300,n)
-    profit = revenue * (0.15 + 0.05*np.sin(np.arange(n)/60)) + np.random.normal(0,3000,n)
-    merchants = 15000 + np.linspace(0,4000,n) + 800*np.sin(np.arange(n)/90) + np.random.normal(0,500,n)
+    revenue = 200000 + np.linspace(0, 50000, n) + 20000*np.sin(np.arange(n)/30) + np.random.normal(0, 8000, n)
+    profit = revenue * (0.18 + 0.02*np.sin(np.arange(n)/50)) + np.random.normal(0, 2000, n)
+    transactions = 5000 + np.linspace(0, 1000, n) + 400*np.sin(np.arange(n)/14) + np.random.normal(0, 200, n)
+    merchants = 12000 + np.linspace(0, 3000, n) + 700*np.sin(np.arange(n)/90) + np.random.normal(0, 400, n)
     df = pd.DataFrame({
         "date": dates,
         "revenue": np.round(revenue, 2),
-        "transactions": np.round(transactions),
         "profit": np.round(profit, 2),
+        "transactions": np.round(transactions),
         "active_merchants": np.round(merchants)
     })
     return df
 
 @st.cache_data
-def prepare_prophet_df(df, date_col, value_col):
-    d = df[[date_col, value_col]].rename(columns={date_col: "ds", value_col: "y"})
+def prepare_prophet(df, date_col, metric):
+    d = df[[date_col, metric]].rename(columns={date_col: "ds", metric: "y"})
     d["ds"] = pd.to_datetime(d["ds"])
-    return d.sort_values("ds")
+    return d
 
 @st.cache_data
-def train_prophet(df, yearly=True, weekly=False):
-    m = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly)
-    m.fit(df)
-    return m
+def train_prophet_model(df, yearly=True, weekly=False):
+    model = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly)
+    model.fit(df)
+    return model
 
-def to_excel_bytes(df):
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="forecast")
-    return out.getvalue()
+def download_excel(df):
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Forecast")
+    return bio.getvalue()
 
-# ------------------ HEADER ------------------
-col1, col2 = st.columns([0.85, 0.15])
-with col1:
-    st.title("Forecasting Fortune ✨💳 — Razorpay Revenue Playground")
-    st.markdown("Turn Razorpay data into fun financial foresight. Predict, play, and plan — all with a few clicks ⚡")
-with col2:
-    st.image("https://em-content.zobj.net/source/animated-nsfw/341/money-with-wings_1f4b8.gif", width=80)
+# --------------------------- SIDEBAR ---------------------------
+st.sidebar.image("https://razorpay.com/blog/content/images/2022/07/logo-1.png", width=160)
+st.sidebar.header("⚙️ Setup")
 
-# ------------------ SIDEBAR ------------------
-st.sidebar.header("📂 Dataset & Model Options")
-uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
-if uploaded is not None:
+uploaded = st.sidebar.file_uploader("Upload your Razorpay CSV", type=["csv"])
+
+if uploaded:
     df = pd.read_csv(uploaded)
 else:
-    df = load_default_data() or generate_synthetic()
-    if load_default_data() is None:
-        st.sidebar.warning("Using synthetic data — no default found.")
+    df = generate_data()
 
-# Column selections
-with st.sidebar.expander("⚙️ Column Settings", expanded=True):
-    date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
-    metric = st.selectbox("Metric to Forecast", [c for c in df.columns if c != date_col], index=0)
+date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
+metric = st.sidebar.selectbox("Select Metric to Forecast", [c for c in df.columns if c != date_col], index=0)
 
-# Convert date column
-df[date_col] = pd.to_datetime(df[date_col])
-df_sorted = df.sort_values(date_col)
+st.sidebar.markdown("---")
+st.sidebar.info("💡 Tip: Try uploading your own transaction data for personalized forecasting!")
 
-# ------------------ TABS ------------------
-tabs = st.tabs(["Overview", "Forecast", "Model Play", "Download"])
+# --------------------------- MAIN TITLE ---------------------------
+st.title("💳 Forecasting Fortune — Razorpay Revenue Analytics")
+st.markdown("""
+Transforming raw financial data into predictive business intelligence.  
+Explore trends, forecast revenue, and visualize growth — the Razorpay way. ⚡
+""")
 
-# ------------------ OVERVIEW ------------------
+tabs = st.tabs(["📊 Overview", "📈 Forecasting", "🧠 Model Play", "📥 Download"])
+
+# --------------------------- OVERVIEW TAB ---------------------------
 with tabs[0]:
-    st.header("Overview & KPIs")
-    latest, prev = df_sorted.iloc[-1], df_sorted.iloc[-2]
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Revenue (latest)", f"₹{int(latest[metric]):,}", delta=f"{int(latest[metric]-prev[metric]):,}")
-    k2.metric("Transactions", f"{int(latest.get('transactions',0)):,}")
-    k3.metric("Profit", f"₹{int(latest.get('profit',0)):,}")
-    k4.metric("Active Merchants", f"{int(latest.get('active_merchants',0)):,}")
+    st.header("📊 Business Overview")
 
-    st.subheader("📈 Trend Visualization")
-    fig = px.line(df_sorted, x=date_col, y=metric, title=f"{metric.title()} over Time", labels={date_col: "Date"})
+    k1, k2, k3, k4 = st.columns(4)
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    k1.metric("Revenue", f"₹{int(latest['revenue']):,}", delta=f"{int(latest['revenue'] - prev['revenue']):,}")
+    k2.metric("Profit", f"₹{int(latest['profit']):,}")
+    k3.metric("Transactions", f"{int(latest['transactions']):,}")
+    k4.metric("Active Merchants", f"{int(latest['active_merchants']):,}")
+
+    fig = px.line(df, x="date", y=metric, title=f"{metric.title()} Trend Over Time", color_discrete_sequence=["#0052cc"])
+    fig.update_layout(hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("🔍 Correlation Snapshot")
-    cols = [c for c in df.columns if c != date_col]
-    if len(cols) >= 2:
-        fig2 = px.scatter(df, x=cols[0], y=cols[1], trendline="ols")
-        st.plotly_chart(fig2, use_container_width=True)
+    st.subheader("Correlation Insights")
+    num_cols = [c for c in df.columns if c != date_col]
+    if len(num_cols) > 1:
+        fig_corr = px.imshow(df[num_cols].corr(), text_auto=True, color_continuous_scale="Blues", title="Metric Correlation Heatmap")
+        st.plotly_chart(fig_corr, use_container_width=True)
 
-# ------------------ FORECAST ------------------
+# --------------------------- FORECAST TAB ---------------------------
 with tabs[1]:
-    st.header("🚀 Forecasting Studio")
+    st.header("🔮 Prophet Forecasting Studio")
+
     horizon = st.slider("Forecast Horizon (weeks)", 4, 52, 26)
-    yearly = st.checkbox("Yearly seasonality", True)
-    weekly = st.checkbox("Weekly seasonality", False)
-    if st.button("Train & Forecast"):
+    yearly = st.checkbox("Include yearly seasonality", True)
+    weekly = st.checkbox("Include weekly seasonality", False)
+
+    if st.button("🚀 Run Forecast"):
         with st.spinner("Training Prophet model..."):
-            prophet_df = prepare_prophet_df(df, date_col, metric)
-            model = train_prophet(prophet_df, yearly, weekly)
+            df_prophet = prepare_prophet(df, date_col, metric)
+            model = train_prophet_model(df_prophet, yearly, weekly)
             future = model.make_future_dataframe(periods=horizon * 7)
             forecast = model.predict(future)
-            st.subheader("📊 Forecast Visualization")
+
+            st.success("Forecast complete ✅")
             fig_forecast = plot_plotly(model, forecast)
             st.plotly_chart(fig_forecast, use_container_width=True)
 
-            st.subheader("Trend Components")
+            st.subheader("Forecast Components")
             st.pyplot(model.plot_components(forecast))
+
+            st.subheader("Predicted Values (last few)")
             st.dataframe(forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(10))
 
-            excel_bytes = to_excel_bytes(forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]])
-            st.download_button("📥 Download Forecast Excel", excel_bytes, "forecast.xlsx")
+            excel = download_excel(forecast)
+            st.download_button("📥 Download Forecast (Excel)", excel, "forecast.xlsx")
 
-# ------------------ MODEL PLAY ------------------
+# --------------------------- MODEL PLAY TAB ---------------------------
 with tabs[2]:
-    st.header("🛠️ Model Play — Try What-Ifs!")
+    st.header("🧠 Model Play — Explore Scenarios")
+
     colA, colB = st.columns(2)
     with colA:
-        ma_window = st.number_input("Rolling Avg Window (days)", 3, 90, 7)
-        df["rolling"] = df_sorted[metric].rolling(ma_window).mean()
-        fig_ma = px.line(df, x=date_col, y=[metric, "rolling"], title="Raw vs Rolling Avg")
-        st.plotly_chart(fig_ma, use_container_width=True)
+        window = st.number_input("Rolling Average (days)", 3, 60, 7)
+        df["rolling"] = df[metric].rolling(window).mean()
+        fig_roll = px.line(df, x="date", y=["rolling", metric],
+                           labels={"value": "Value", "variable": "Series"},
+                           title="Rolling Average vs Actual")
+        st.plotly_chart(fig_roll, use_container_width=True)
     with colB:
-        shock = st.slider("Simulate revenue shock (%)", -50, 200, 0)
-        st.write(f"Future scenario adjustment: {shock}% growth (hypothetical).")
+        shock = st.slider("Simulate % Growth Shock", -50, 200, 0)
+        adj_df = df.copy()
+        adj_df["adjusted"] = adj_df[metric] * (1 + shock / 100)
+        fig_adj = px.line(adj_df, x="date", y=["adjusted", metric],
+                          title=f"{shock}% Shock Scenario on {metric.title()}")
+        st.plotly_chart(fig_adj, use_container_width=True)
 
-# ------------------ DOWNLOAD ------------------
+# --------------------------- DOWNLOAD TAB ---------------------------
 with tabs[3]:
-    st.header("📦 Download & Share")
-    st.download_button("Download dataset (CSV)", df.to_csv(index=False).encode("utf-8"), "razorpay_dataset.csv")
-    st.download_button("Download README", b"Run locally: streamlit run forecasting_fortune_streamlit.py", "README.txt")
+    st.header("📥 Downloads & Resources")
+    st.download_button("Download Dataset (CSV)", df.to_csv(index=False).encode(), "razorpay_dataset.csv")
+    st.download_button("Download App README", "Run locally: streamlit run app.py".encode(), "README.txt")
+    st.markdown("Built for learning, insight, and a little fintech fun ✨")
 
 st.markdown("---")
-st.markdown("Made with ❤️ and caffeine for the *Forecasting Fortune* project ☕💳✨")
+st.caption("💳 Forecasting Fortune | A Razorpay-themed analytics experience made with ❤️ + data.")
