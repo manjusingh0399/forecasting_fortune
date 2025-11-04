@@ -1,176 +1,297 @@
-# app.py — Forecasting Fortune 💳
-# Razorpay-themed revenue forecasting & analytics webapp
-# Safe, self-contained, Streamlit Cloud ready
+# app_v2.py
+# Forecasting Fortune — Grant Thornton Case Edition (Apr 2025 -> Mar 2026)
+# Streamlit app that uses Prophet for forecasting and provides business insights.
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 from prophet import Prophet
 from prophet.plot import plot_plotly
 from io import BytesIO
-import base64
+from datetime import datetime
 
-# --------------------------- PAGE CONFIG ---------------------------
-st.set_page_config(
-    page_title="Forecasting Fortune 💳",
-    layout="wide",
-    page_icon="💫",
-    initial_sidebar_state="expanded"
-)
+# -------------------- CONFIG --------------------
+st.set_page_config(page_title="Forecasting Fortune — Grant Thornton", layout="wide", page_icon="💳")
 
-# --------------------------- THEME ---------------------------
-st.markdown("""
-    <style>
-    body { background-color: #f8faff; }
-    .main {
-        background: linear-gradient(180deg, rgba(240,245,255,1) 0%, rgba(255,255,255,1) 100%);
-        border-radius: 20px;
-        padding: 20px;
-    }
-    .stApp header { display: none; }
-    .block-container { padding-top: 1rem; }
-    h1, h2, h3, h4 { color: #0052cc; }
-    </style>
-""", unsafe_allow_html=True)
+START_DATE = pd.to_datetime("2025-04-01")
+END_DATE = pd.to_datetime("2026-03-31")
+FORECAST_WEEKS = 12  # forecast horizon after end of fiscal window
 
-# --------------------------- HELPERS ---------------------------
+# -------------------- HELPERS --------------------
 @st.cache_data
-def generate_data(n=1000, start="2023-01-01"):
-    dates = pd.date_range(start=start, periods=n, freq="D")
-    revenue = 200000 + np.linspace(0, 50000, n) + 20000*np.sin(np.arange(n)/30) + np.random.normal(0, 8000, n)
-    profit = revenue * (0.18 + 0.02*np.sin(np.arange(n)/50)) + np.random.normal(0, 2000, n)
-    transactions = 5000 + np.linspace(0, 1000, n) + 400*np.sin(np.arange(n)/14) + np.random.normal(0, 200, n)
-    merchants = 12000 + np.linspace(0, 3000, n) + 700*np.sin(np.arange(n)/90) + np.random.normal(0, 400, n)
+def load_uploaded_or_default(uploaded_file):
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            return df
+        except Exception as e:
+            st.warning("Uploaded file couldn't be read as CSV. Using synthetic data instead.")
+    # generate synthetic weekly data for fiscal year
+    return generate_synthetic_weekly(START_DATE, END_DATE)
+
+def generate_synthetic_weekly(start, end):
+    # Create weekly date range (week start: Monday)
+    dates = pd.date_range(start=start, end=end, freq='W-MON')
+    n = len(dates)
+    # Make realistic-ish patterns
+    base_revenue = 5_000_000  # weekly rupees baseline
+    trend = np.linspace(0, 800_000, n)  # gentle growth across year
+    season = 400_000 * np.sin(np.arange(n) * 2 * np.pi / 26)  # semiannual-ish
+    noise = np.random.normal(0, 150_000, n)
+    revenue = np.round(base_revenue + trend + season + noise, 2)
+    transactions = np.round(100_000 + np.linspace(0, 20_000, n) + 5_000*np.sin(np.arange(n)/4) + np.random.normal(0,2000,n))
+    profit_margin = 0.12 + 0.01 * np.sin(np.arange(n)/8)  # around 12%
+    profit = np.round(revenue * profit_margin + np.random.normal(0, 40_000, n), 2)
+    merchants = np.round(200_000 + np.linspace(0, 10_000, n) + 3_000*np.sin(np.arange(n)/12) + np.random.normal(0,1000,n))
     df = pd.DataFrame({
         "date": dates,
-        "revenue": np.round(revenue, 2),
-        "profit": np.round(profit, 2),
-        "transactions": np.round(transactions),
-        "active_merchants": np.round(merchants)
+        "revenue": revenue,
+        "transactions": transactions,
+        "profit": profit,
+        "active_merchants": merchants
     })
     return df
 
-@st.cache_data
-def prepare_prophet(df, date_col, metric):
-    d = df[[date_col, metric]].rename(columns={date_col: "ds", metric: "y"})
+def filter_fy_window(df, date_col="date"):
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    mask = (df[date_col] >= START_DATE) & (df[date_col] <= END_DATE)
+    df = df.loc[mask].sort_values(date_col).reset_index(drop=True)
+    return df
+
+def prepare_prophet_df(df, date_col="date", value_col="revenue"):
+    d = df[[date_col, value_col]].rename(columns={date_col: "ds", value_col: "y"})
     d["ds"] = pd.to_datetime(d["ds"])
     return d
 
-@st.cache_data
-def train_prophet_model(df, yearly=True, weekly=False):
-    model = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly)
-    model.fit(df)
-    return model
+def train_and_forecast(prophet_df, weeks_ahead=12, yearly=True, weekly=False):
+    m = Prophet(yearly_seasonality=yearly, weekly_seasonality=weekly, daily_seasonality=False)
+    m.fit(prophet_df)
+    future = m.make_future_dataframe(periods=weeks_ahead*7)  # days
+    fc = m.predict(future)
+    return m, fc
 
-def download_excel(df):
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="Forecast")
-    return bio.getvalue()
+def to_excel_bytes(df):
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="forecast")
+    return out.getvalue()
 
-# --------------------------- SIDEBAR ---------------------------
-st.sidebar.image("https://razorpay.com/blog/content/images/2022/07/logo-1.png", width=160)
-st.sidebar.header("⚙️ Setup")
+# -------------------- APP UI --------------------
+st.markdown("<h1 style='color:#0B69FF'>Forecasting Fortune — Razorpay (Grant Thornton Edition)</h1>", unsafe_allow_html=True)
+st.markdown("**Scope:** April 1, 2025 — March 31, 2026. Forecast next 12 weeks after Mar 31, 2026.  ")
 
-uploaded = st.sidebar.file_uploader("Upload your Razorpay CSV", type=["csv"])
+# Sidebar: upload
+st.sidebar.header("Data")
+uploaded = st.sidebar.file_uploader("Upload CSV (optional) — app will filter Apr 2025 to Mar 2026", type=["csv"])
+df_raw = load_uploaded_or_default(uploaded)
+df = filter_fy_window(df_raw, date_col="date")
+if df.empty:
+    st.error("No data found for Apr 2025 - Mar 2026. Using synthetic weekly data for that window.")
+    df = generate_synthetic_weekly(START_DATE, END_DATE)
 
-if uploaded:
-    df = pd.read_csv(uploaded)
-else:
-    df = generate_data()
+# Basic cleaning & ensure numeric
+for col in ["revenue","transactions","profit","active_merchants"]:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+# Fill small gaps with forward fill
+df = df.sort_values("date").reset_index(drop=True)
+df.interpolate(method='time', inplace=True)
+df.fillna(method='ffill', inplace=True)
 
-date_col = next((c for c in df.columns if "date" in c.lower()), df.columns[0])
-metric = st.sidebar.selectbox("Select Metric to Forecast", [c for c in df.columns if c != date_col], index=0)
+# Tabs
+tabs = st.tabs(["Overview", "Forecasting Studio", "Profitability Playbook", "Strategy Insights"])
 
-st.sidebar.markdown("---")
-st.sidebar.info("💡 Tip: Try uploading your own transaction data for personalized forecasting!")
-
-# --------------------------- MAIN TITLE ---------------------------
-st.title("💳 Forecasting Fortune — Razorpay Revenue Analytics")
-st.markdown("""
-Transforming raw financial data into predictive business intelligence.  
-Explore trends, forecast revenue, and visualize growth — the Razorpay way. ⚡
-""")
-
-tabs = st.tabs(["📊 Overview", "📈 Forecasting", "🧠 Model Play", "📥 Download"])
-
-# --------------------------- OVERVIEW TAB ---------------------------
+# -------------------- OVERVIEW --------------------
 with tabs[0]:
-    st.header("📊 Business Overview")
-
-    k1, k2, k3, k4 = st.columns(4)
+    st.subheader("Business Overview — FY 2025-26")
+    # KPIs: show last available week in window
     latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    k1.metric("Revenue", f"₹{int(latest['revenue']):,}", delta=f"{int(latest['revenue'] - prev['revenue']):,}")
-    k2.metric("Profit", f"₹{int(latest['profit']):,}")
-    k3.metric("Transactions", f"{int(latest['transactions']):,}")
-    k4.metric("Active Merchants", f"{int(latest['active_merchants']):,}")
+    prev = df.iloc[-2] if len(df) >= 2 else latest
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Revenue (latest week)", f"₹{int(latest['revenue']):,}", delta=f"₹{int(latest['revenue'] - prev['revenue']):,}")
+    c2.metric("Profit (latest week)", f"₹{int(latest.get('profit',0)):,}")
+    c3.metric("Transactions (latest week)", f"{int(latest.get('transactions',0)):,}")
+    c4.metric("Active Merchants (latest)", f"{int(latest.get('active_merchants',0)):,}")
 
-    fig = px.line(df, x="date", y=metric, title=f"{metric.title()} Trend Over Time", color_discrete_sequence=["#0052cc"])
-    fig.update_layout(hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("**Revenue trend (weekly)**")
+    fig_rev = px.line(df, x="date", y="revenue", title="Weekly Revenue — FY25-26", labels={"revenue":"Revenue (₹)", "date":"Week"})
+    fig_rev.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_rev, use_container_width=True)
 
-    st.subheader("Correlation Insights")
-    num_cols = [c for c in df.columns if c != date_col]
-    if len(num_cols) > 1:
-        fig_corr = px.imshow(df[num_cols].corr(), text_auto=True, color_continuous_scale="Blues", title="Metric Correlation Heatmap")
+    st.markdown("**Other metrics**")
+    fig_multi = px.line(df, x="date", y=["transactions","profit","active_merchants"], labels={"value":"Value","variable":"Metric"})
+    st.plotly_chart(fig_multi, use_container_width=True)
+
+    st.markdown("**Correlation heatmap (numeric metrics)**")
+    num_cols = [c for c in ["revenue","profit","transactions","active_merchants"] if c in df.columns]
+    if len(num_cols) >= 2:
+        corr = df[num_cols].corr()
+        fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale="Blues", title="Correlation between metrics")
         st.plotly_chart(fig_corr, use_container_width=True)
+    else:
+        st.info("Not enough numeric columns for correlation.")
 
-# --------------------------- FORECAST TAB ---------------------------
+# -------------------- FORECASTING --------------------
 with tabs[1]:
-    st.header("🔮 Prophet Forecasting Studio")
+    st.subheader("Revenue Crystal Ball 🔮")
+    st.markdown("We use Prophet to forecast revenue for the next 12 weeks after Mar 31, 2026.")
+    # allow user to choose metric to forecast (default revenue)
+    metric_choice = st.selectbox("Metric to forecast", options=[c for c in df.columns if c!="date"], index=0)
+    yearly = st.checkbox("Add yearly seasonality", value=True)
+    weekly = st.checkbox("Add weekly seasonality", value=False)
+    if st.button("Run Forecast"):
+        with st.spinner("Training model and creating forecast..."):
+            prop_df = prepare_prophet_df(df, date_col="date", value_col=metric_choice)
+            # Prophet wants regular spacing; it's ok with weekly/daily mixed — we use as is.
+            model, forecast = train_and_forecast(prop_df, weeks_ahead=FORECAST_WEEKS, yearly=yearly, weekly=weekly)
+            st.success("Forecast ready ✅")
 
-    horizon = st.slider("Forecast Horizon (weeks)", 4, 52, 26)
-    yearly = st.checkbox("Include yearly seasonality", True)
-    weekly = st.checkbox("Include weekly seasonality", False)
+            # Plot interactive forecast
+            fig = plot_plotly(model, forecast)
+            st.plotly_chart(fig.update_layout(title=f"Forecast for {metric_choice.title()}"), use_container_width=True)
 
-    if st.button("🚀 Run Forecast"):
-        with st.spinner("Training Prophet model..."):
-            df_prophet = prepare_prophet(df, date_col, metric)
-            model = train_prophet_model(df_prophet, yearly, weekly)
-            future = model.make_future_dataframe(periods=horizon * 7)
-            forecast = model.predict(future)
+            # Components
+            st.markdown("**Forecast components**")
+            comp_fig = model.plot_components(forecast)
+            st.pyplot(comp_fig)
 
-            st.success("Forecast complete ✅")
-            fig_forecast = plot_plotly(model, forecast)
-            st.plotly_chart(fig_forecast, use_container_width=True)
+            # show forecast tail (period after the end date)
+            future_mask = forecast["ds"] > END_DATE
+            ftail = forecast.loc[future_mask, ["ds","yhat","yhat_lower","yhat_upper"]].copy()
+            ftail["ds"] = pd.to_datetime(ftail["ds"]).dt.date
+            st.dataframe(ftail.head(FORECAST_WEEKS*7).head(FORECAST_WEEKS))  # show weekly head rows approx
 
-            st.subheader("Forecast Components")
-            st.pyplot(model.plot_components(forecast))
+            # Simple summary: predicted % change from last actual to median of forecast first 4 weeks
+            if not ftail.empty:
+                first_n = ftail.head(7)  # approx 1 week (model predicts daily)
+                # compute mean yhat for the first 7 days => weekly estimate
+                pred_weekly = first_n["yhat"].mean()
+                last_actual = df[metric_choice].iloc[-1]
+                pct_change = (pred_weekly - last_actual) / last_actual * 100 if last_actual != 0 else np.nan
+                st.metric("Predicted weekly change vs last actual", f"{pct_change:.2f}%")
 
-            st.subheader("Predicted Values (last few)")
-            st.dataframe(forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(10))
+            # download
+            st.download_button("Download full forecast (Excel)", to_excel_bytes(forecast), file_name="forecast_full.xlsx")
 
-            excel = download_excel(forecast)
-            st.download_button("📥 Download Forecast (Excel)", excel, "forecast.xlsx")
-
-# --------------------------- MODEL PLAY TAB ---------------------------
+# -------------------- PROFITABILITY PLAYBOOK --------------------
 with tabs[2]:
-    st.header("🧠 Model Play — Explore Scenarios")
-
+    st.subheader("Profitability Playbook — What-if Scenarios")
+    st.markdown("Simulate improvements in profit margin or transaction growth and see impact on revenue/profit.")
     colA, colB = st.columns(2)
     with colA:
-        window = st.number_input("Rolling Average (days)", 3, 60, 7)
-        df["rolling"] = df[metric].rolling(window).mean()
-        fig_roll = px.line(df, x="date", y=["rolling", metric],
-                           labels={"value": "Value", "variable": "Series"},
-                           title="Rolling Average vs Actual")
-        st.plotly_chart(fig_roll, use_container_width=True)
+        profit_margin_delta = st.slider("Change in profit margin (percentage points)", -10.0, 30.0, 0.0, step=0.5)
+        st.write("This adjusts the profit margin applied to revenue (hypothetical).")
+        # compute baseline margin from data
+        if ("profit" in df.columns) and ("revenue" in df.columns):
+            baseline_margin = (df["profit"].sum() / df["revenue"].sum()) if df["revenue"].sum()!=0 else 0.12
+        else:
+            baseline_margin = 0.12
+        new_margin = baseline_margin + profit_margin_delta/100.0
+        st.write(f"Baseline margin ≈ {baseline_margin*100:.2f}%, New margin ≈ {new_margin*100:.2f}%")
+        df_play = df.copy()
+        df_play["sim_profit"] = df_play["revenue"] * new_margin
+        fig_sim = px.line(df_play, x="date", y=["profit","sim_profit"], labels={"value":"Profit (₹)","variable":"Series"}, title="Actual Profit vs Simulated Profit")
+        st.plotly_chart(fig_sim, use_container_width=True)
+        total_gain = df_play["sim_profit"].sum() - df_play["profit"].sum() if "profit" in df.columns else df_play["sim_profit"].sum()
+        st.metric("Estimated incremental profit (FY)", f"₹{int(total_gain):,}")
+
     with colB:
-        shock = st.slider("Simulate % Growth Shock", -50, 200, 0)
-        adj_df = df.copy()
-        adj_df["adjusted"] = adj_df[metric] * (1 + shock / 100)
-        fig_adj = px.line(adj_df, x="date", y=["adjusted", metric],
-                          title=f"{shock}% Shock Scenario on {metric.title()}")
-        st.plotly_chart(fig_adj, use_container_width=True)
+        tx_growth = st.slider("Simulate Transactions growth (%)", -50, 200, 0)
+        st.write("This simulates percentage growth in transactions across the FY window.")
+        df_tx = df.copy()
+        if "transactions" in df.columns:
+            df_tx["sim_transactions"] = df_tx["transactions"] * (1 + tx_growth/100.0)
+            # naive conversion: revenue per transaction baseline
+            rev_per_tx = (df["revenue"].sum() / df["transactions"].sum()) if df["transactions"].sum()!=0 else 50
+            df_tx["sim_revenue"] = df_tx["sim_transactions"] * rev_per_tx
+            fig_tx = px.line(df_tx, x="date", y=["revenue","sim_revenue"], labels={"value":"Revenue (₹)","variable":"Series"}, title="Revenue vs Transaction-driven Revenue")
+            st.plotly_chart(fig_tx, use_container_width=True)
+            incremental = df_tx["sim_revenue"].sum() - df["revenue"].sum()
+            st.metric("Estimated incremental revenue (FY)", f"₹{int(incremental):,}")
+        else:
+            st.info("No 'transactions' column found in dataset to simulate transaction growth.")
 
-# --------------------------- DOWNLOAD TAB ---------------------------
+# -------------------- STRATEGY INSIGHTS --------------------
 with tabs[3]:
-    st.header("📥 Downloads & Resources")
-    st.download_button("Download Dataset (CSV)", df.to_csv(index=False).encode(), "razorpay_dataset.csv")
-    st.download_button("Download App README", "Run locally: streamlit run app.py".encode(), "README.txt")
-    st.markdown("Built for learning, insight, and a little fintech fun ✨")
+    st.subheader("Strategy Insights — Executive Summary")
+    st.markdown("Automatic data-driven takeaways (use these in your Grant Thornton-style brief).")
 
+    # Basic driver analysis: correlation coefficients
+    driver_text = ""
+    if len(num_cols) >= 2:
+        corr = df[num_cols].corr()
+        # find top absolute correlation with revenue (excluding revenue self)
+        if "revenue" in corr.columns:
+            corr_with_rev = corr["revenue"].drop("revenue", errors="ignore").abs().sort_values(ascending=False)
+            if not corr_with_rev.empty:
+                top_driver = corr_with_rev.index[0]
+                top_val = corr_with_rev.iloc[0]
+                driver_text += f"- Top driver correlated with revenue: **{top_driver}** (|r| = {top_val:.2f}).\n"
+            else:
+                driver_text += "- Correlation analysis inconclusive.\n"
+    else:
+        driver_text += "- Not enough metrics to run driver analysis.\n"
+
+    # Growth rate across FY
+    try:
+        start_val = df["revenue"].iloc[0]
+        end_val = df["revenue"].iloc[-1]
+        yoy_growth = (end_val - start_val) / start_val * 100 if start_val != 0 else np.nan
+        driver_text += f"- Revenue growth across FY window: **{yoy_growth:.2f}%** (first → last week).\n"
+    except Exception:
+        driver_text += "- Could not compute growth (missing revenue values).\n"
+
+    # Forecast hint (if forecast exists in session state)
+    # We'll check if user ran forecast by looking for last forecast in downloads? Simpler: re-run small forecast quickly for a 4-week horizon to produce a direction hint.
+    try:
+        pf = prepare_prophet_df(df, "date", "revenue")
+        mtmp = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False)
+        mtmp.fit(pf)
+        fut = mtmp.make_future_dataframe(periods=28)  # 4 weeks
+        ftmp = mtmp.predict(fut)
+        # compute mean yhat in first 7 days after END_DATE
+        post = ftmp[ftmp["ds"] > END_DATE]
+        if not post.empty:
+            next_week_mean = post.head(7)["yhat"].mean()
+            last_actual = df["revenue"].iloc[-1]
+            pct_change = (next_week_mean - last_actual)/last_actual*100 if last_actual!=0 else 0.0
+            driver_text += f"- Short-term forecast indicates a weekly revenue change of **{pct_change:.2f}%** vs last week.\n"
+    except Exception:
+        driver_text += "- Forecast quick-check unavailable (model error).\n"
+
+    # Optimization suggestions (simple rule-based)
+    suggestions = []
+    if "active_merchants" in df.columns and "transactions" in df.columns:
+        # If active merchants correlate strongly with revenue, suggest merchant acquisition
+        corr_am_rev = df["active_merchants"].corr(df["revenue"])
+        if abs(corr_am_rev) > 0.4:
+            suggestions.append("Prioritize merchant acquisition & retention programs — merchants show strong correlation to revenue.")
+    if "transactions" in df.columns:
+        tx_var = df["transactions"].pct_change().std()
+        if tx_var > 0.1:
+            suggestions.append("Stabilize transaction volumes (promotions/merchant support) to reduce revenue volatility.")
+    # add margin suggestion
+    if "profit" in df.columns and "revenue" in df.columns:
+        margin = df["profit"].sum() / df["revenue"].sum() if df["revenue"].sum()!=0 else 0.12
+        if margin < 0.12:
+            suggestions.append("Focus on cost optimization (payment routing, processing fees) to improve profit margins.")
+
+    # Render text
+    st.markdown(driver_text)
+    if suggestions:
+        st.markdown("**Suggested focus areas:**")
+        for s in suggestions:
+            st.markdown(f"- {s}")
+    else:
+        st.markdown("- No specific optimization suggestions from heuristics. Consider deeper segmentation analysis.")
+
+    st.markdown("---")
+    st.markdown("**Use these insights for your slide deck:** copy the bullets above into a 1-slide executive summary for leadership.")
+
+# -------------------- FOOTER --------------------
 st.markdown("---")
-st.caption("💳 Forecasting Fortune | A Razorpay-themed analytics experience made with ❤️ + data.")
+st.caption("Forecasting Fortune — Built for the Grant Thornton Razorpay case. Scope limited to Apr 2025 → Mar 2026. Made with ❤️ and data.")
+
